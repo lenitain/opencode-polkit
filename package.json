@@ -1,0 +1,44 @@
+{
+  "name": "opencode-polkit",
+  "version": "0.1.0",
+  "description": "Redirect sudo/doas to pkexec in OpenCode — uses system polkit agent for native auth dialogs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "opencode": ">=1.0.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.0.0",
+    "bun-types": "^1.2.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": ["opencode-plugin", "sudo", "pkexec", "polkit", "security"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lenitain/opencode-polkit.git"
+  },
+  "homepage": "https://github.com/lenitain/opencode-polkit#readme",
+  "bugs": {
+    "url": "https://github.com/lenitain/opencode-polkit/issues"
+  }
+}

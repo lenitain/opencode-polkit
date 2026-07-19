@@ -31,6 +31,8 @@ Or add to `opencode.json` / `~/.config/opencode/opencode.jsonc`:
 | `sudoedit`      | blocked                        | blocked              |
 | `visudo`        | blocked                        | blocked              |
 
+When a user denies the polkit authentication dialog, a clear error message is shown.
+
 ## i18n
 
 Messages adapt to `$LC_MESSAGES` / `$LANG`. Currently supports:

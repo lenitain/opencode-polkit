@@ -1,6 +1,6 @@
 {
   "name": "opencode-polkit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Redirect sudo/doas to pkexec in OpenCode — uses system polkit agent for native auth dialogs",
   "type": "module",
   "main": "./dist/index.js",

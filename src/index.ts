@@ -122,11 +122,17 @@ function polkitAvailable(): boolean {
 const hasPolkit = polkitAvailable()
 
 export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
+  const deniedCommands = new Set<string>()
+
   return {
     "tool.execute.before": async (hookInput, hookOutput) => {
       if (hookInput.tool !== "bash") return
       const command: string = hookOutput?.args?.command ?? ""
       if (!MATCH.test(command)) return
+
+      if (deniedCommands.has(command)) {
+        throw new Error(MSG.polkitDenied)
+      }
 
       if (/^pkexec(?![-\/.\w])/.test(command.trim())) {
         if (!hasPolkit) throw new Error(MSG.noPolkitPkexec)
@@ -151,8 +157,14 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
       const command: string = hookInput.args?.command ?? ""
       if (!MATCH.test(command)) return
 
+      const originalCommand = command.replace(
+        /(?<![-\/.\w])pkexec(?![-\/.\w])/,
+        "sudo",
+      )
+
       if (/\bNot authorized\b/.test(hookOutput.output) ||
           /\bError executing command as another user\b/.test(hookOutput.output)) {
+        deniedCommands.add(originalCommand)
         throw new Error(MSG.polkitDenied)
       }
     },

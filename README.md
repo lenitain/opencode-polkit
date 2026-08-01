@@ -4,8 +4,10 @@ Redirect `sudo`/`doas` to `pkexec` in [OpenCode](https://opencode.ai).
 Triggers the system's native polkit authentication dialog (KDE, GNOME, etc.)
 instead of requiring a terminal for password input.
 
-When polkit is unavailable, privilege escalation commands are blocked with a
-clear error message.
+Like CachyOS Hello, the plugin does not check for a polkit agent up front:
+`sudo` is always redirected to `pkexec` at execution time, and polkitd routes
+the request to whatever agent is currently registered. If no agent is
+available, `pkexec` fails with its own clear error message.
 
 ## Install
 
@@ -21,15 +23,23 @@ Or add to `opencode.json` / `~/.config/opencode/opencode.jsonc`:
 }
 ```
 
+For local development, point opencode at the project directory instead:
+
+```json
+{
+  "plugin": ["/path/to/opencode-polkit"]
+}
+```
+
 ## Behavior
 
-| Command         | polkit available               | polkit unavailable   |
-|-----------------|--------------------------------|----------------------|
-| `sudo xxx`      | redirects to `pkexec xxx`      | blocked with error   |
-| `doas xxx`      | redirects to `pkexec xxx`      | blocked with error   |
-| `pkexec xxx`    | passes through                 | blocked with error   |
-| `sudoedit`      | blocked                        | blocked              |
-| `visudo`        | blocked                        | blocked              |
+| Command         | result                                     |
+|-----------------|--------------------------------------------|
+| `sudo xxx`      | redirects to `pkexec xxx`                  |
+| `doas xxx`      | redirects to `pkexec xxx`                  |
+| `pkexec xxx`    | passes through                             |
+| `sudoedit`      | blocked                                    |
+| `visudo`        | blocked                                    |
 
 When a user denies the polkit authentication dialog, a clear error message is shown.
 

@@ -160,9 +160,11 @@ function detectLocale(): string {
 const MSG: Messages = translations[detectLocale()] ?? translations.en
 
 /** Wrap a leading pkexec with a timeout so a stuck polkit authentication
- * (agent registered but unroutable) fails after `seconds` instead of
- * hanging the bash tool forever. */
-const AUTH_TIMEOUT_SECS = 120
+ * (agent registered but unroutable — the "dialog never appears" case)
+ * fails after `seconds` instead of hanging the bash tool forever. 30s is
+ * enough for a visible dialog to be confirmed and short enough that a
+ * silent hang is noticed quickly. */
+const AUTH_TIMEOUT_SECS = 30
 
 export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
   const deniedCommands = new Set<string>()

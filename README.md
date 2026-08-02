@@ -11,7 +11,8 @@ the request to whatever agent is currently registered. Without an agent,
 (no TTY); the plugin reports that as a clear denial. With an agent whose
 registration is inconsistent (a known wayland/systemd-user-session
 issue), polkitd waits for it and `pkexec` would hang forever — a leading
-`timeout 120` guard bounds that to a visible failure.
+`timeout 30` guard bounds that to a visible failure (retry or check the
+polkit agent when it happens).
 
 ## Install
 

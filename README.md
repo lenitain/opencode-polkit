@@ -8,13 +8,10 @@ Like CachyOS Hello, the plugin does not check for a polkit agent up front:
 `sudo` is always redirected to `pkexec` at execution time, and polkitd routes
 the request to whatever agent is currently registered. Without an agent,
 `pkexec` fails fast with `Error creating textual authentication agent`
-(no TTY); the plugin reports that as a clear denial. With an agent whose
-registration is inconsistent (a known wayland/systemd-user-session
-issue), polkitd waits for it and `pkexec` would hang forever — a leading
-`timeout 30` guard bounds that to a visible failure with an explicit
-message (`polkit authentication not completed within 30s`), so the agent
-(or user) can tell an auth problem apart from a command failure and
-decide whether to retry.
+(no TTY); the plugin reports that as a clear denial. A hang (dialog never
+appears) is bounded by the bash tool's own timeout (default 2 min,
+configurable up to 10 min) and left untranslated — it cannot be told
+apart from a long-running command.
 
 ## Install
 
@@ -42,24 +39,32 @@ For local development, point opencode at the project directory instead:
 
 | Command               | result                                                |
 |-----------------------|-------------------------------------------------------|
-| `sudo xxx`            | redirects to `timeout 120 pkexec xxx`                 |
-| `doas xxx`            | redirects to `timeout 120 pkexec xxx`                 |
+| `sudo xxx`            | redirects to `pkexec xxx`                             |
+| `doas xxx`            | redirects to `pkexec xxx`                             |
 | `cat x \| sudo tee y` | redirects to `cat x \| pkexec tee y` (mid-command)    |
 | `pkexec xxx`          | passes through                                        |
 | `sudoedit` / `visudo` | blocked                                               |
 
-### Detection
+### Minimal intervention
 
-Privilege keywords are found by a **lexical scanner**, not a regex: it
-tracks quote state, backslash escapes and heredocs, so `sudo` inside
-string literals, comments or heredoc bodies is ignored, while `sudo` in
-any executable position (leading, after `&&`/`||`/`|`, in `$(...)` or
-subshells) is rewritten or reported. `sudo a && sudo b` rewrites both.
+The command is rewritten **only** by replacing `sudo`/`doas` with
+`pkexec` — its shape is otherwise untouched, so the agent always sees a
+command that behaves like the one it wrote. Privilege keywords are found
+by a lexical scanner (quote/escape/heredoc aware): `sudo` inside string
+literals, comments or heredocs is ignored; `sudo` in any executable
+position (leading, after `&&`/`||`/`|`, in `$(...)` or subshells) is
+rewritten. `sudo a && sudo b` rewrites both.
 
-When authentication is denied (`Not authorized`, `Error executing
-command as another user`, `Error creating textual authentication
-agent`), a clear error message is shown and the command is remembered
-so a retry is rejected without prompting again.
+### Failures
+
+Unambiguous authentication failures are reported as clear errors and the
+command is remembered so a retry is rejected without prompting again
+(cleared when opencode restarts): `Not authorized`, `Error executing
+command as another user`, `Error creating textual authentication agent`
+(no polkit agent + no TTY). A hang (dialog never appears) is bounded by
+the bash tool's own timeout (default 2 min, configurable up to 10 min)
+and is left untranslated — it cannot be told apart from a long-running
+command.
 
 ## i18n
 

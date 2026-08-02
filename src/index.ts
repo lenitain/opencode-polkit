@@ -200,19 +200,18 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
         }
       }
 
-      // Uniform timeout guard: a leading `timeout N ` before EVERY pkexec
-      // is control-flow neutral inside any command shape (simple, `&&`,
-      // pipes, subshells). Skipped when the user already wrote a timeout.
-      // Re-scan the rewritten command (indices shifted after the rewrite)
-      // and insert prefixes back to front so earlier indices stay valid.
-      const PREFIX = `timeout ${AUTH_TIMEOUT_SECS} `
-      let out = rewritten
-      for (const h of [...scanPrivileged(out)].reverse()) {
-        if (h.kw !== "pkexec") continue
-        if (/timeout\s+\d+\s+$/.test(out.slice(0, h.index))) continue
-        out = out.slice(0, h.index) + PREFIX + out.slice(h.index)
+      // Authentication/execution split: a stuck polkit authentication
+      // (dialog never appears) must be bounded, but the wrapped command's
+      // own runtime must NOT be bounded (e.g. `pacman -Syu` runs for
+      // minutes). A leading `timeout N pkexec true && ` performs the
+      // authentication first (bounded), writes the auth_admin_keep cache,
+      // then the rewritten pkexec command runs with a cache hit — no
+      // second dialog, no runtime limit. Control-flow neutral for every
+      // shape; env assignments stay attached to their command.
+      const guard = `timeout ${AUTH_TIMEOUT_SECS} pkexec true && `
+      if (!/^timeout\s+\d+\s+/.test(rewritten.trimStart())) {
+        rewritten = guard + rewritten
       }
-      rewritten = out
 
       hookOutput.args.command = rewritten
     },
@@ -223,8 +222,9 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
       if (hits.length === 0) return
 
       // Reconstruct the user's original command for the deny list: strip
-      // the timeout guard and map pkexec back to sudo.
-      let original = command.replace(/^(\s*)timeout\s+\d+\s+/, "$1")
+      // the authentication guard and map pkexec back to sudo.
+      let original = command
+        .replace(new RegExp(`^\\s*timeout \\d+ pkexec true && `), "")
       for (const h of [...scanPrivileged(original)].reverse()) {
         if (h.kw === "pkexec") {
           original = original.slice(0, h.index) + "sudo" + original.slice(h.index + 6)

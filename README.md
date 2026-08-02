@@ -11,8 +11,10 @@ the request to whatever agent is currently registered. Without an agent,
 (no TTY); the plugin reports that as a clear denial. With an agent whose
 registration is inconsistent (a known wayland/systemd-user-session
 issue), polkitd waits for it and `pkexec` would hang forever — a leading
-`timeout 30` guard bounds that to a visible failure (retry or check the
-polkit agent when it happens).
+`timeout 30` guard bounds that to a visible failure with an explicit
+message (`polkit authentication not completed within 30s`), so the agent
+(or user) can tell an auth problem apart from a command failure and
+decide whether to retry.
 
 ## Install
 

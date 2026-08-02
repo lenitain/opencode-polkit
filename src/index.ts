@@ -199,11 +199,24 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
       }
 
       // Leading command gets a timeout guard: a hung polkit dialog (no
-      // matching agent) previously hung the bash tool forever.
+      // matching agent) previously hung the bash tool forever. Only simple
+      // commands are wrapped (no command separators after pkexec) so
+      // compound commands and user redirections are never restructured.
+      // Only exit code 124 (timeout's own code) prints the auth-specific
+      // message; a command that merely fails keeps its real exit code and
+      // no misleading message.
       const lead = /^\s*/.exec(rewritten)![0]
       const rest = rewritten.slice(lead.length)
-      if (/^pkexec\b/.test(rest) && !/^timeout\s+\d+\s+/.test(rest)) {
-        rewritten = lead + `timeout ${AUTH_TIMEOUT_SECS} ` + rest
+      if (
+        /^pkexec\b/.test(rest) &&
+        !/^timeout\s+\d+\s+/.test(rest) &&
+        !/[;&|()]|\s&&|\s\|\|/.test(rest.slice("pkexec".length))
+      ) {
+        rewritten =
+          lead +
+          `timeout ${AUTH_TIMEOUT_SECS} ` +
+          rest +
+          `; code=$?; if [ $code -eq 124 ]; then echo "[opencode-polkit] polkit authentication not completed within ${AUTH_TIMEOUT_SECS}s (dialog may not have appeared)"; fi; exit $code`
       }
 
       hookOutput.args.command = rewritten

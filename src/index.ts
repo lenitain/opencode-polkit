@@ -159,11 +159,14 @@ function detectLocale(): string {
 
 const MSG: Messages = translations[detectLocale()] ?? translations.en
 
-/** Wrap a leading pkexec with a timeout so a stuck polkit authentication
+/** Wrap EVERY pkexec with a timeout so a stuck polkit authentication
  * (agent registered but unroutable — the "dialog never appears" case)
- * fails after `seconds` instead of hanging the bash tool forever. 30s is
- * enough for a visible dialog to be confirmed and short enough that a
- * silent hang is noticed quickly. */
+ * fails after `seconds` instead of hanging the bash tool forever.
+ * A leading `timeout N ` prefix is control-flow neutral for any command
+ * shape (simple, `&&`, pipes, subshells), so all shapes are wrapped
+ * uniformly — no per-shape analysis needed. The after-hook identifies
+ * the timeout from the tool's own output (`exited with code 124` /
+ * `timed out`). */
 const AUTH_TIMEOUT_SECS = 30
 
 export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
@@ -188,8 +191,7 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
       if (hits.every((h) => h.kw === "pkexec")) return
 
       // Rewrite every in-command sudo/doas to pkexec (back to front so
-      // indices stay valid). Mid-command occurrences keep their position:
-      // `cat x | sudo tee y` -> `cat x | pkexec tee y`.
+      // indices stay valid): `cat x | sudo tee y` -> `cat x | pkexec tee y`.
       let rewritten = command
       for (const h of [...hits].reverse()) {
         if (h.kw === "sudo" || h.kw === "doas") {
@@ -198,26 +200,19 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
         }
       }
 
-      // Leading command gets a timeout guard: a hung polkit dialog (no
-      // matching agent) previously hung the bash tool forever. Only simple
-      // commands are wrapped (no command separators after pkexec) so
-      // compound commands and user redirections are never restructured.
-      // Only exit code 124 (timeout's own code) prints the auth-specific
-      // message; a command that merely fails keeps its real exit code and
-      // no misleading message.
-      const lead = /^\s*/.exec(rewritten)![0]
-      const rest = rewritten.slice(lead.length)
-      if (
-        /^pkexec\b/.test(rest) &&
-        !/^timeout\s+\d+\s+/.test(rest) &&
-        !/[;&|()]|\s&&|\s\|\|/.test(rest.slice("pkexec".length))
-      ) {
-        rewritten =
-          lead +
-          `timeout ${AUTH_TIMEOUT_SECS} ` +
-          rest +
-          `; code=$?; if [ $code -eq 124 ]; then echo "[opencode-polkit] polkit authentication not completed within ${AUTH_TIMEOUT_SECS}s (dialog may not have appeared)"; fi; exit $code`
+      // Uniform timeout guard: a leading `timeout N ` before EVERY pkexec
+      // is control-flow neutral inside any command shape (simple, `&&`,
+      // pipes, subshells). Skipped when the user already wrote a timeout.
+      // Re-scan the rewritten command (indices shifted after the rewrite)
+      // and insert prefixes back to front so earlier indices stay valid.
+      const PREFIX = `timeout ${AUTH_TIMEOUT_SECS} `
+      let out = rewritten
+      for (const h of [...scanPrivileged(out)].reverse()) {
+        if (h.kw !== "pkexec") continue
+        if (/timeout\s+\d+\s+$/.test(out.slice(0, h.index))) continue
+        out = out.slice(0, h.index) + PREFIX + out.slice(h.index)
       }
+      rewritten = out
 
       hookOutput.args.command = rewritten
     },
@@ -243,6 +238,20 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
       ) {
         deniedCommands.add(original)
         throw new Error(MSG.polkitDenied)
+      }
+
+      // The bash tool appends its own exit summary to the output
+      // ("Command exited with code 124." / "Command timed out before
+      // completion."). 124 is `timeout`'s code: authentication was not
+      // completed (dialog never appeared / never confirmed). This works
+      // uniformly for every command shape — no per-shape analysis.
+      if (
+        /\bexited with code 124\b/.test(hookOutput.output) ||
+        /\btimed out before completion\b/.test(hookOutput.output)
+      ) {
+        throw new Error(
+          `[opencode-polkit] polkit authentication not completed within ${AUTH_TIMEOUT_SECS}s (dialog may not have appeared or was not confirmed)`,
+        )
       }
     },
   }

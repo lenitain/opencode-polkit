@@ -1,6 +1,100 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 
-const MATCH = /(?<![-\/.\w])(sudo|pkexec|doas|sudoedit|visudo)(?![-\/.\w])/i
+type Kw = "sudo" | "doas" | "sudoedit" | "visudo" | "pkexec"
+
+type Hit = { index: number; kw: Kw }
+
+/**
+ * Lexical scan for privilege-escalation keywords OUTSIDE quotes.
+ *
+ * Shell commands may contain `sudo` anywhere a command starts (pipes,
+ * `&&`/`||`, subshells, command substitution), and string literals /
+ * comments may contain the same words spuriously. A plain regex cannot
+ * tell those apart; this scanner tracks quote state (' " and backslash
+ * escapes) and only reports keywords in executable position.
+ *
+ * - `node -e "…sudo…"`        → no hit (inside quotes)
+ * - `cat x | sudo tee y`       → hit at index 8 (command boundary)
+ * - `cd /tmp && sudo ./x`      → hit (after `&&`)
+ */
+function scanPrivileged(command: string): Hit[] {
+  const hits: Hit[] = []
+  let inSingle = false
+  let inDouble = false
+  let escaped = false
+  // Heredoc delimiters waiting to close (stack; multiple << are legal).
+  const heredocs: string[] = []
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+
+    // Inside a heredoc body: only a line consisting of the delimiter ends
+    // it. Content there is a string literal, never a command.
+    if (heredocs.length > 0) {
+      const lineEnd = command.indexOf("\n", i)
+      const line = lineEnd === -1 ? command.slice(i) : command.slice(i, lineEnd)
+      if (heredocs.some((d) => line === d)) {
+        heredocs.pop()
+      }
+      i = lineEnd === -1 ? command.length : lineEnd
+      continue
+    }
+
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (ch === "\\" && !inSingle) {
+      escaped = true
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      continue
+    }
+    if (inSingle || inDouble) continue
+
+    // Heredoc start: `<<[-]DELIM` (delim may be quoted or unquoted).
+    if (ch === "<" && command[i + 1] === "<") {
+      let j = i + 2
+      if (command[j] === "-") j++
+      while (j < command.length && /\s/.test(command[j])) j++
+      if (j < command.length && (command[j] === "'" || command[j] === '"')) {
+        const q = command[j]
+        const end = command.indexOf(q, j + 1)
+        if (end !== -1) {
+          heredocs.push(command.slice(j + 1, end))
+          i = end
+          continue
+        }
+      } else {
+        const m = /^[^\s|;&<>()]+/.exec(command.slice(j))
+        if (m) {
+          heredocs.push(m[0])
+          i = j + m[0].length - 1
+          continue
+        }
+      }
+    }
+
+    const prev = i > 0 ? command[i - 1] : ""
+    if (/[-\/.\w]/.test(prev)) continue
+    for (const kw of ["sudoedit", "visudo", "sudo", "doas", "pkexec"] as const) {
+      if (command.startsWith(kw, i)) {
+        const next = command[i + kw.length] ?? ""
+        if (!/[-\/.\w]/.test(next)) {
+          hits.push({ index: i, kw })
+          i += kw.length - 1
+          break
+        }
+      }
+    }
+  }
+  return hits
+}
 
 type Messages = {
   blocked: string
@@ -65,6 +159,11 @@ function detectLocale(): string {
 
 const MSG: Messages = translations[detectLocale()] ?? translations.en
 
+/** Wrap a leading pkexec with a timeout so a stuck polkit authentication
+ * (agent registered but unroutable) fails after `seconds` instead of
+ * hanging the bash tool forever. */
+const AUTH_TIMEOUT_SECS = 120
+
 export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
   const deniedCommands = new Set<string>()
 
@@ -72,38 +171,62 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
     "tool.execute.before": async (hookInput, hookOutput) => {
       if (hookInput.tool !== "bash") return
       const command: string = hookOutput?.args?.command ?? ""
-      if (!MATCH.test(command)) return
+      const hits = scanPrivileged(command)
+      if (hits.length === 0) return
 
       if (deniedCommands.has(command)) {
         throw new Error(MSG.polkitDenied)
       }
 
-      if (/^pkexec(?![-\/.\w])/.test(command.trim())) {
-        return
-      }
-
-      if (/(?<![-\/.\w])(sudoedit|visudo)(?![-\/.\w])/.test(command)) {
+      if (hits.some((h) => h.kw === "sudoedit" || h.kw === "visudo")) {
         throw new Error(MSG.blocked)
       }
 
-      hookOutput.args.command = command.replace(
-        /(?<![-\/.\w])(sudo|doas)(?![-\/.\w])/,
-        "pkexec",
-      )
+      // Already pkexec (leading or mid-command): pass through untouched.
+      if (hits.every((h) => h.kw === "pkexec")) return
+
+      // Rewrite every in-command sudo/doas to pkexec (back to front so
+      // indices stay valid). Mid-command occurrences keep their position:
+      // `cat x | sudo tee y` -> `cat x | pkexec tee y`.
+      let rewritten = command
+      for (const h of [...hits].reverse()) {
+        if (h.kw === "sudo" || h.kw === "doas") {
+          rewritten =
+            rewritten.slice(0, h.index) + "pkexec" + rewritten.slice(h.index + h.kw.length)
+        }
+      }
+
+      // Leading command gets a timeout guard: a hung polkit dialog (no
+      // matching agent) previously hung the bash tool forever.
+      const lead = /^\s*/.exec(rewritten)![0]
+      const rest = rewritten.slice(lead.length)
+      if (/^pkexec\b/.test(rest) && !/^timeout\s+\d+\s+/.test(rest)) {
+        rewritten = lead + `timeout ${AUTH_TIMEOUT_SECS} ` + rest
+      }
+
+      hookOutput.args.command = rewritten
     },
     "tool.execute.after": async (hookInput, hookOutput) => {
       if (hookInput.tool !== "bash") return
       const command: string = hookInput.args?.command ?? ""
-      if (!MATCH.test(command)) return
+      const hits = scanPrivileged(command)
+      if (hits.length === 0) return
 
-      const originalCommand = command.replace(
-        /(?<![-\/.\w])pkexec(?![-\/.\w])/,
-        "sudo",
-      )
+      // Reconstruct the user's original command for the deny list: strip
+      // the timeout guard and map pkexec back to sudo.
+      let original = command.replace(/^(\s*)timeout\s+\d+\s+/, "$1")
+      for (const h of [...scanPrivileged(original)].reverse()) {
+        if (h.kw === "pkexec") {
+          original = original.slice(0, h.index) + "sudo" + original.slice(h.index + 6)
+        }
+      }
 
-      if (/\bNot authorized\b/.test(hookOutput.output) ||
-          /\bError executing command as another user\b/.test(hookOutput.output)) {
-        deniedCommands.add(originalCommand)
+      if (
+        /\bNot authorized\b/.test(hookOutput.output) ||
+        /\bError executing command as another user\b/.test(hookOutput.output) ||
+        /\bError creating textual authentication agent\b/.test(hookOutput.output)
+      ) {
+        deniedCommands.add(original)
         throw new Error(MSG.polkitDenied)
       }
     },

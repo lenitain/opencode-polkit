@@ -41,6 +41,7 @@ For local development, point opencode at the project directory instead:
 |-----------------------|-------------------------------------------------------|
 | `sudo xxx`            | redirects to `pkexec xxx`                             |
 | `doas xxx`            | redirects to `pkexec xxx`                             |
+| `sudo -n xxx`         | blocked: pkexec has no short options (unclear failure)|
 | `cat x \| sudo tee y` | redirects to `cat x \| pkexec tee y` (mid-command)    |
 | `pkexec xxx`          | passes through                                        |
 | `sudoedit` / `visudo` | blocked                                               |
@@ -52,8 +53,10 @@ The command is rewritten **only** by replacing `sudo`/`doas` with
 command that behaves like the one it wrote. Privilege keywords are found
 by a lexical scanner (quote/escape/heredoc aware): `sudo` inside string
 literals, comments or heredocs is ignored; `sudo` in any executable
-position (leading, after `&&`/`||`/`|`, in `$(...)` or subshells) is
-rewritten. `sudo a && sudo b` rewrites both.
+position (leading, after `&&`/`||`/`|`, in `$(...)` or subshells, after
+an env assignment like `FOO=1 sudo x`) is rewritten, while the same word
+in argument position (`--name sudo bash`) is left alone. `sudo a && sudo b`
+rewrites both.
 
 ### Failures
 
@@ -65,6 +68,13 @@ command as another user`, `Error creating textual authentication agent`
 the bash tool's own timeout (default 2 min, configurable up to 10 min)
 and is left untranslated — it cannot be told apart from a long-running
 command.
+
+Options pkexec does not accept (all short options, plus any long option
+outside `--user`, `--keep-cwd`, `--disable-internal-agent`, `--help`,
+`--version`) are rejected before execution with a clear message, since
+the rewrite would otherwise surface pkexec's own confusing
+`Cannot run program -n` error. `sudo --` and options after the program
+name are left alone.
 
 ## i18n
 

@@ -4,6 +4,15 @@ type Kw = "sudo" | "doas" | "sudoedit" | "visudo" | "pkexec"
 
 type Hit = { index: number; kw: Kw }
 
+/** Long options pkexec accepts (all of them; pkexec has no short options). */
+const PKEXEC_OPTIONS = new Set([
+  "--version",
+  "--help",
+  "--disable-internal-agent",
+  "--keep-cwd",
+  "--user",
+])
+
 /**
  * Lexical scan for privilege-escalation keywords OUTSIDE quotes.
  *
@@ -16,24 +25,32 @@ type Hit = { index: number; kw: Kw }
  * - `node -e "…sudo…"`        → no hit (inside quotes)
  * - `cat x | sudo tee y`       → hit at index 8 (command boundary)
  * - `cd /tmp && sudo ./x`      → hit (after `&&`)
+ * - `--name sudo bash`         → no hit (argument position)
+ * - `echo x; # sudo y`         → no hit (comment)
  */
 function scanPrivileged(command: string): Hit[] {
   const hits: Hit[] = []
   let inSingle = false
   let inDouble = false
   let escaped = false
+  // True right after a command boundary (`;`, `&&`, `||`, `|`, `(`, start).
+  let atCommandStart = true
   // Heredoc delimiters waiting to close (stack; multiple << are legal).
   const heredocs: string[] = []
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]
 
     // Inside a heredoc body: only a line consisting of the delimiter ends
-    // it. Content there is a string literal, never a command.
+    // it. Content there is a string literal, never a command. Pop the
+    // matching delimiter (nested heredocs close in any order).
     if (heredocs.length > 0) {
       const lineEnd = command.indexOf("\n", i)
       const line = lineEnd === -1 ? command.slice(i) : command.slice(i, lineEnd)
-      if (heredocs.some((d) => line === d)) {
-        heredocs.pop()
+      const idx = heredocs.lastIndexOf(line)
+      if (idx !== -1) {
+        heredocs.splice(idx)
+        // The line after the delimiter starts a new command position.
+        atCommandStart = true
       }
       i = lineEnd === -1 ? command.length : lineEnd
       continue
@@ -51,7 +68,7 @@ function scanPrivileged(command: string): Hit[] {
       inSingle = !inSingle
       continue
     }
-    if (ch === '"' && !inSingle) {
+    if (ch === '"' && !inDouble) {
       inDouble = !inDouble
       continue
     }
@@ -80,8 +97,38 @@ function scanPrivileged(command: string): Hit[] {
       }
     }
 
-    const prev = i > 0 ? command[i - 1] : ""
-    if (/[-\/.\w]/.test(prev)) continue
+    // Command boundaries open a new executable position.
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "(" || ch === "\n") {
+      atCommandStart = true
+      continue
+    }
+
+    // `#` at a word start begins a comment that runs to end of line.
+    if (ch === "#") {
+      const prev = command[i - 1] ?? ""
+      if (i === 0 || /\s/.test(prev) || /[;|&(]/.test(prev)) {
+        const nl = command.indexOf("\n", i)
+        i = nl === -1 ? command.length : nl
+        continue
+      }
+    }
+
+    if (/\s/.test(ch)) continue
+
+    // An env assignment (`FOO=1 sudo x`) still starts a command; any other
+    // word in argument position (`--name sudo`) does not.
+    let isCommandPos = atCommandStart
+    if (!isCommandPos) {
+      let j = i - 1
+      while (j >= 0 && /\s/.test(command[j])) j--
+      while (j >= 0 && !/[\s;|&()]/.test(command[j])) j--
+      const token = command.slice(j + 1, i)
+      if (token.includes("=")) isCommandPos = true
+    }
+    atCommandStart = false
+
+    if (!isCommandPos) continue
+
     for (const kw of ["sudoedit", "visudo", "sudo", "doas", "pkexec"] as const) {
       if (command.startsWith(kw, i)) {
         const next = command[i + kw.length] ?? ""
@@ -96,55 +143,105 @@ function scanPrivileged(command: string): Hit[] {
   return hits
 }
 
+/**
+ * First option token after a privilege keyword that pkexec does not
+ * accept, or null when the command's options are pkexec-compatible.
+ * Scanning stops at the program name (`--` also terminates options, as
+ * in sudo); tokens after it belong to the program, not to pkexec.
+ *
+ * - `sudo -n true`             → `-n` (pkexec has no short options)
+ * - `sudo --non-interactive x` → `--non-interactive`
+ * - `sudo --user root x`       → null (compatible)
+ * - `sudo -- x -n`             → null (`--` ends sudo options)
+ */
+function findBadOption(command: string, hit: Hit): string | null {
+  let i = hit.index + hit.kw.length
+  while (i < command.length && /\s/.test(command[i])) i++
+  while (i < command.length && command[i] === "-") {
+    let end = i + 1
+    while (end < command.length && !/\s/.test(command[end]) && !/[;|&()]/.test(command[end])) end++
+    const token = command.slice(i, end)
+    if (token === "--") break
+    if (!token.startsWith("--")) return token
+    if (!PKEXEC_OPTIONS.has(token.split("=")[0])) return token
+    i = end
+    while (i < command.length && /\s/.test(command[i])) i++
+  }
+  return null
+}
+
 type Messages = {
   blocked: string
   polkitDenied: string
+  badOption: string
 }
 
 const translations: Record<string, Messages> = {
   en: {
     blocked: "Privilege escalation command blocked by plugin",
     polkitDenied: "Polkit authentication denied by user",
+    badOption:
+      'Option "{opt}" is not supported by pkexec. Remove it or use a pkexec-compatible one (--user, --keep-cwd, --disable-internal-agent).',
   },
   zh: {
     blocked: "权限提升命令已被插件拦截",
     polkitDenied: "Polkit 认证已被用户拒绝",
+    badOption:
+      '选项 "{opt}" 不被 pkexec 支持,请移除或改用 pkexec 兼容选项(--user、--keep-cwd、--disable-internal-agent)。',
   },
   ja: {
     blocked: "特権昇格コマンドはプラグインによりブロックされました",
     polkitDenied: "Polkit 認証がユーザーによって拒否されました",
+    badOption:
+      'オプション "{opt}" は pkexec ではサポートされていません。削除するか、pkexec 互換オプション(--user、--keep-cwd、--disable-internal-agent)を使用してください。',
   },
   ko: {
     blocked: "권한 상승 명령이 플러그인에 의해 차단되었습니다",
     polkitDenied: "Polkit 인증이 사용자에 의해 거부되었습니다",
+    badOption:
+      '옵션 "{opt}"은(는) pkexec에서 지원되지 않습니다. 제거하거나 pkexec 호환 옵션(--user, --keep-cwd, --disable-internal-agent)을 사용하세요.',
   },
   de: {
     blocked: "Berechtigungseskalation vom Plugin blockiert",
     polkitDenied: "Polkit-Authentifizierung vom Benutzer abgelehnt",
+    badOption:
+      'Option "{opt}" wird von pkexec nicht unterstützt. Entfernen Sie sie oder verwenden Sie eine pkexec-kompatible Option (--user, --keep-cwd, --disable-internal-agent).',
   },
   fr: {
     blocked: "Commande d'élévation de privilèges bloquée par le plugin",
     polkitDenied: "Authentification polkit refusée par l'utilisateur",
+    badOption:
+      'Option "{opt}" non prise en charge par pkexec. Supprimez-la ou utilisez une option compatible pkexec (--user, --keep-cwd, --disable-internal-agent).',
   },
   es: {
     blocked: "Comando de elevación de privilegios bloqueado por el plugin",
     polkitDenied: "Autenticación polkit denegada por el usuario",
+    badOption:
+      'Opción "{opt}" no admitida por pkexec. Elimínela o use una opción compatible con pkexec (--user, --keep-cwd, --disable-internal-agent).',
   },
   pt: {
     blocked: "Comando de elevação de privilégios bloqueado pelo plugin",
     polkitDenied: "Autenticação polkit negada pelo usuário",
+    badOption:
+      'Opção "{opt}" não suportada pelo pkexec. Remova-a ou use uma opção compatível com pkexec (--user, --keep-cwd, --disable-internal-agent).',
   },
   ru: {
     blocked: "Команда повышения привилегий заблокирована плагином",
     polkitDenied: "Аутентификация polkit отклонена пользователем",
+    badOption:
+      'Параметр "{opt}" не поддерживается pkexec. Удалите его или используйте совместимый параметр (--user, --keep-cwd, --disable-internal-agent).',
   },
   tr: {
     blocked: "Yetki yükseltme komutu eklenti tarafından engellendi",
     polkitDenied: "Polkit kimlik doğrulaması kullanıcı tarafından reddedildi",
+    badOption:
+      '"{opt}" seçeneği pkexec tarafından desteklenmiyor. Kaldırın veya pkexec uyumlu bir seçenek kullanın (--user, --keep-cwd, --disable-internal-agent).',
   },
   uk: {
     blocked: "Команду підвищення привілеїв заблоковано плагіном",
     polkitDenied: "Автентифікацію polkit відхилено користувачем",
+    badOption:
+      'Параметр "{opt}" не підтримується pkexec. Видаліть його або використайте сумісний параметр (--user, --keep-cwd, --disable-internal-agent).',
   },
 }
 
@@ -175,6 +272,15 @@ export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
 
       if (hits.some((h) => h.kw === "sudoedit" || h.kw === "visudo")) {
         throw new Error(MSG.blocked)
+      }
+
+      // Rewrite would produce `pkexec <bad option>`: fail with a clear
+      // message instead of a confusing `Cannot run program` error.
+      for (const h of hits) {
+        if (h.kw === "sudo" || h.kw === "doas" || h.kw === "pkexec") {
+          const bad = findBadOption(command, h)
+          if (bad) throw new Error(MSG.badOption.replace("{opt}", bad))
+        }
       }
 
       // Already pkexec (leading or mid-command): pass through untouched.

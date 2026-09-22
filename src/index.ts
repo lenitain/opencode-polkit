@@ -1,4 +1,4 @@
-import type { Plugin, PluginInput } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 
 type Kw = "sudo" | "doas" | "sudoedit" | "visudo" | "pkexec"
 
@@ -256,77 +256,112 @@ function detectLocale(): string {
 
 const MSG: Messages = translations[detectLocale()] ?? translations.en
 
-export const PolkitPlugin: Plugin = async (_input: PluginInput) => {
+/** The `shell` tool's input (OpenCode 2.0 renamed `bash` to `shell`). */
+type ShellInput = { readonly command?: unknown }
+
+/** The command string of a shell tool call, or "" for anything else. */
+function shellCommand(input: unknown): string {
+  if (typeof input !== "object" || input === null) return ""
+  const command = (input as ShellInput).command
+  return typeof command === "string" ? command : ""
+}
+
+/** Plain text of a tool result, whether content is a string or Content[]. */
+function resultText(result: { readonly content?: unknown }): string {
+  const content = result.content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) =>
+      typeof part === "object" && part !== null && "type" in part && part.type === "text" && "text" in part
+        ? String(part.text)
+        : "",
+    )
+    .join("\n")
+}
+
+const setup = async (ctx: Plugin.Context): Promise<void> => {
   const deniedCommands = new Set<string>()
 
-  return {
-    "tool.execute.before": async (hookInput, hookOutput) => {
-      if (hookInput.tool !== "bash") return
-      const command: string = hookOutput?.args?.command ?? ""
-      const hits = scanPrivileged(command)
-      if (hits.length === 0) return
+  await ctx.tool.hook("execute.before", (event) => {
+    if (event.tool !== "shell") return
+    // Mutating the input object in place rewrites the executed command;
+    // core uses `event.input` after every hook has run.
+    const args = event.input
+    const command = shellCommand(args)
+    const hits = scanPrivileged(command)
+    if (hits.length === 0) return
 
-      if (deniedCommands.has(command)) {
-        throw new Error(MSG.polkitDenied)
+    if (deniedCommands.has(command)) {
+      throw new Error(MSG.polkitDenied)
+    }
+
+    if (hits.some((h) => h.kw === "sudoedit" || h.kw === "visudo")) {
+      throw new Error(MSG.blocked)
+    }
+
+    // Rewrite would produce `pkexec <bad option>`: fail with a clear
+    // message instead of a confusing `Cannot run program` error.
+    for (const h of hits) {
+      if (h.kw === "sudo" || h.kw === "doas" || h.kw === "pkexec") {
+        const bad = findBadOption(command, h)
+        if (bad) throw new Error(MSG.badOption.replace("{opt}", bad))
       }
+    }
 
-      if (hits.some((h) => h.kw === "sudoedit" || h.kw === "visudo")) {
-        throw new Error(MSG.blocked)
+    // Already pkexec (leading or mid-command): pass through untouched.
+    if (hits.every((h) => h.kw === "pkexec")) return
+
+    // Rewrite every in-command sudo/doas to pkexec (back to front so
+    // indices stay valid): `cat x | sudo tee y` -> `cat x | pkexec tee y`.
+    // No other rewriting: the command keeps its exact shape so the agent
+    // sees only the minimal change (sudo -> pkexec).
+    let rewritten = command
+    for (const h of [...hits].reverse()) {
+      if (h.kw === "sudo" || h.kw === "doas") {
+        rewritten = rewritten.slice(0, h.index) + "pkexec" + rewritten.slice(h.index + h.kw.length)
       }
+    }
 
-      // Rewrite would produce `pkexec <bad option>`: fail with a clear
-      // message instead of a confusing `Cannot run program` error.
-      for (const h of hits) {
-        if (h.kw === "sudo" || h.kw === "doas" || h.kw === "pkexec") {
-          const bad = findBadOption(command, h)
-          if (bad) throw new Error(MSG.badOption.replace("{opt}", bad))
-        }
+    ;(args as { command?: string }).command = rewritten
+  })
+
+  await ctx.tool.hook("execute.after", (event) => {
+    if (event.tool !== "shell") return
+    // `event.input` is the (possibly rewritten) command the shell ran:
+    // map pkexec back to sudo to reconstruct the original for the deny list.
+    const command = shellCommand(event.input)
+    const hits = scanPrivileged(command)
+    if (hits.length === 0) return
+
+    let original = command
+    for (const h of [...hits].reverse()) {
+      if (h.kw === "pkexec") {
+        original = original.slice(0, h.index) + "sudo" + original.slice(h.index + 6)
       }
+    }
 
-      // Already pkexec (leading or mid-command): pass through untouched.
-      if (hits.every((h) => h.kw === "pkexec")) return
+    const text =
+      event.status === "completed" ? resultText(event.result) : event.status === "error" ? event.error.message : ""
 
-      // Rewrite every in-command sudo/doas to pkexec (back to front so
-      // indices stay valid): `cat x | sudo tee y` -> `cat x | pkexec tee y`.
-      // No other rewriting: the command keeps its exact shape so the agent
-      // sees only the minimal change (sudo -> pkexec).
-      let rewritten = command
-      for (const h of [...hits].reverse()) {
-        if (h.kw === "sudo" || h.kw === "doas") {
-          rewritten =
-            rewritten.slice(0, h.index) + "pkexec" + rewritten.slice(h.index + h.kw.length)
-        }
-      }
-
-      hookOutput.args.command = rewritten
-    },
-    "tool.execute.after": async (hookInput, hookOutput) => {
-      if (hookInput.tool !== "bash") return
-      const command: string = hookInput.args?.command ?? ""
-      const hits = scanPrivileged(command)
-      if (hits.length === 0) return
-
-      // Reconstruct the user's original command for the deny list: map
-      // pkexec back to sudo.
-      let original = command
-      for (const h of [...scanPrivileged(original)].reverse()) {
-        if (h.kw === "pkexec") {
-          original = original.slice(0, h.index) + "sudo" + original.slice(h.index + 6)
-        }
-      }
-
-      // Only unambiguous authentication failures are reported and deny
-      // listed. A hang (dialog never appears) is bounded by the bash tool's
-      // own timeout (default 2 min) and is NOT translated here: it cannot
-      // be told apart from a long-running command.
-      if (
-        /\bNot authorized\b/.test(hookOutput.output) ||
-        /\bError executing command as another user\b/.test(hookOutput.output) ||
-        /\bError creating textual authentication agent\b/.test(hookOutput.output)
-      ) {
-        deniedCommands.add(original)
-        throw new Error(MSG.polkitDenied)
-      }
-    },
-  }
+    // Only unambiguous authentication failures are reported and deny
+    // listed. A hang (dialog never appears) is bounded by the shell tool's
+    // own timeout (default 2 min) and is NOT translated here: it cannot
+    // be told apart from a long-running command.
+    if (
+      /\bNot authorized\b/.test(text) ||
+      /\bError executing command as another user\b/.test(text) ||
+      /\bError creating textual authentication agent\b/.test(text)
+    ) {
+      deniedCommands.add(original)
+      throw new Error(MSG.polkitDenied)
+    }
+  })
 }
+
+/**
+ * OpenCode 2.0 requires a default export shaped `{ id, setup }` (the loader
+ * rejects anything else). Deliberately a plain object with type-only imports:
+ * the built plugin has zero runtime dependencies.
+ */
+export default { id: "opencode-polkit", setup } satisfies Plugin.Plugin

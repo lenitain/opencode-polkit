@@ -1,9 +1,0 @@
-{
-  "imports": {
-    "@opencode-ai/plugin": "./types/plugin.d.ts"
-  },
-  "tasks": {
-    "check": "deno check src/index.ts",
-    "build": "deno run -A tools/build.ts"
-  }
-}

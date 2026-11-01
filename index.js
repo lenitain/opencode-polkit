@@ -1,6 +1,6 @@
-// Local-directory entrypoint for OpenCode 2.0: the loader resolves a plugin
-// directory by looking for `server`/`index` at its root (package.json "main"
-// and "exports" are only consulted for npm package names). npm installs reach
-// the real build through package.json "exports"; this shim covers
-// `"plugins": ["/path/to/opencode-polkit"]`.
+// Local-directory entrypoint for OpenCode: OpenCode 2.2 also resolves a
+// directory through a named package.json and its "exports", but older 2.0
+// releases only look for `server`/`index` at the root. npm installs reach the
+// real build through package.json "exports"; this shim keeps
+// `"plugins": ["/path/to/opencode-polkit"]` working on both.
 export { default } from "./dist/index.js"

@@ -8,7 +8,7 @@ import { installPolkitShims, removePolkitShims } from "./shims.js"
 const FALLBACK_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 /**
- * Redirects sudo/doas to pkexec without touching the command text.
+ * Redirects sudo/doas/su -c to pkexec without touching the command text.
  *
  * The shell tool spawns `$SHELL -c 'command'` with the environment built here,
  * so putting the shims first on PATH lets the shell's own name resolution pick

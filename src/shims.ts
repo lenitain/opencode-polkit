@@ -174,6 +174,113 @@ fi
 run_pkexec "$@"
 `
 
+/**
+ * The su shim. `su -c` is the only form pkexec can express exactly: a command
+ * run as the target user through a shell, in the current directory. Every
+ * other form asks for a login shell, an environment, a shell binary, a group
+ * or a terminal, none of which pkexec can honour, so it is refused instead.
+ */
+const SU_SHIM = `#!/bin/sh
+# opencode-polkit: su shim. Routes su -c to pkexec so polkit can authorize it.
+# Generated at plugin startup; do not edit.
+
+fail() {
+	printf 'opencode-polkit: %s\\n' "$1" >&2
+	exit ${SHIM_USAGE_EXIT}
+}
+
+command -v pkexec >/dev/null 2>&1 || fail 'pkexec is not installed; install polkit'
+
+user=
+cmd=
+has_cmd=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--)
+		shift
+		break
+		;;
+	-c)
+		[ $# -ge 2 ] || fail 'su -c needs a command: su -c COMMAND [USER]'
+		cmd=$2
+		has_cmd=1
+		shift 2
+		;;
+	-c?*)
+		cmd=\${1#-c}
+		has_cmd=1
+		shift
+		;;
+	--command)
+		[ $# -ge 2 ] || fail 'su --command needs a command: su --command COMMAND [USER]'
+		cmd=$2
+		has_cmd=1
+		shift 2
+		;;
+	--command=*)
+		cmd=\${1#--command=}
+		has_cmd=1
+		shift
+		;;
+	- | -l | --login)
+		fail 'su starts a login shell; run pkexec bash instead.'
+		;;
+	-s | --shell | -s?* | --shell=*)
+		fail 'su -s picks the shell; name the shell in the command: pkexec sh -c ...'
+		;;
+	-m | -p | --preserve-environment)
+		fail 'pkexec deliberately sanitizes the environment; drop -m/-p.'
+		;;
+	-g | -G | --group | --supp-group | -g?* | -G?* | --group=* | --supp-group=*)
+		fail 'su -g/-G switches groups; pkexec can only switch users.'
+		;;
+	-w | --whitelist-environment | -w?* | --whitelist-environment=*)
+		fail 'su -w whitelists environment variables; pkexec sanitizes the environment.'
+		;;
+	-P | --pty)
+		fail 'su --pty asks for a terminal; the shell tool has none.'
+		;;
+	-f | --fast)
+		fail 'su -f is a shell flag; pass it to the shell in the command instead.'
+		;;
+	--session-command | --session-command=*)
+		fail 'su --session-command keeps the session; pkexec always starts a new process.'
+		;;
+	-h | --help | -V | --version)
+		fail "option has no pkexec equivalent: $1"
+		;;
+	-?*)
+		fail "unknown su option: $1"
+		;;
+	*)
+		[ -z "$user" ] || fail 'su passes arguments after the user name to the shell; use su -c COMMAND USER.'
+		user=$1
+		shift
+		;;
+	esac
+done
+
+# Operands after -- are the same user-then-nothing sequence.
+while [ $# -gt 0 ]; do
+	[ -z "$user" ] || fail 'su passes arguments after the user name to the shell; use su -c COMMAND USER.'
+	user=$1
+	shift
+done
+
+[ -n "$user" ] || user=root
+[ -n "$has_cmd" ] || fail 'su without -c opens an interactive shell; run pkexec bash instead.'
+
+# su keeps the working directory unless it is a login shell, and --keep-cwd is
+# how pkexec does the same. pkexec is silent when the dialog is dismissed
+# (status 126), so say what the status means.
+pkexec --keep-cwd --user "$user" sh -c "$cmd"
+status=$?
+if [ $status -eq 126 ]; then
+	printf 'opencode-polkit: %s\\n' 'the polkit authentication dialog was dismissed' >&2
+fi
+exit $status
+`
+
 /** sudoedit edits through sudo's own temporary-file flow; polkit has none. */
 const SUDOEDIT_SHIM = `#!/bin/sh
 printf 'opencode-polkit: sudoedit is not supported; write a temp file and run pkexec install or pkexec cp on it.\\n' >&2
@@ -190,6 +297,7 @@ exit ${SHIM_USAGE_EXIT}
 const POLKIT_SHIM_SCRIPTS: Record<string, string> = {
   sudo: SUDO_SHIM,
   doas: DOAS_SHIM,
+  su: SU_SHIM,
   sudoedit: SUDOEDIT_SHIM,
   visudo: VISUDO_SHIM,
 }
@@ -197,8 +305,8 @@ const POLKIT_SHIM_SCRIPTS: Record<string, string> = {
 /**
  * Writes the shim scripts into a fresh private directory and returns it.
  * The caller prepends this directory to PATH; the shell then resolves
- * `sudo`/`doas` to these files instead of the system ones. The directory is
- * 0700 so no other local user can rewrite the scripts.
+ * `sudo`/`doas`/`su` to these files instead of the system ones. The directory
+ * is 0700 so no other local user can rewrite the scripts.
  */
 export function installPolkitShims(): string {
   const directory = mkdtempSync(join(shimBaseDirectory(), "opencode-polkit-"))

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `src/shims.ts`: `su` stand-in. `su -c COMMAND [USER]` (also `-cCOMMAND`,
+  `--command COMMAND`, `--command=COMMAND`) becomes
+  `pkexec --keep-cwd --user USER sh -c COMMAND`, because a non-login `su` keeps
+  the working directory and runs its command through a shell. Every other form
+  is refused with status `64` and one line naming the alternative: `su`,
+  `su -`, `su -l` (login shell → `pkexec bash`), `-m`/`-p`/`-w` (pkexec
+  sanitizes the environment), `-s` (name the shell in the command), `-g`/`-G`
+  (pkexec cannot switch groups), `--pty` (no terminal), `-f` and
+  `--session-command`.
+- README scope statement: the plugin covers elevation → polkit only; ssh,
+  gpg/pinentry, keyrings, database clients, `kinit` and disk encryption are
+  explicitly out of scope and need an askpass helper or a PTY.
+
+### Changed
+
+- README authorisation note: a desktop agent may reuse the password it already
+  holds, so a second command can run without a dialog; that cache belongs to
+  the agent and must not be relied on. `su -c … USER` authenticates an
+  administrator rather than `USER`, and runs the command with `sh -c`.
+
 ## [0.3.0] - 2026-11-01
 
 0.3.0 replaces how the plugin decides anything. It used to parse the command

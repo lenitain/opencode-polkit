@@ -1,7 +1,7 @@
 {
   "name": "opencode-polkit",
   "version": "0.3.0",
-  "description": "Redirect sudo/doas to pkexec in OpenCode via PATH shims, so the system polkit agent handles authentication",
+  "description": "Redirect sudo, doas and su to pkexec in OpenCode via PATH shims, so the system polkit agent handles authentication",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -38,7 +38,7 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.5.0"
   },
-  "keywords": ["opencode-plugin", "sudo", "doas", "pkexec", "polkit", "security"],
+  "keywords": ["opencode-plugin", "sudo", "doas", "su", "pkexec", "polkit", "security"],
   "license": "MIT",
   "repository": {
     "type": "git",

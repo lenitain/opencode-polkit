@@ -1,6 +1,6 @@
 {
   "name": "opencode-polkit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Redirect sudo, doas and su to pkexec in OpenCode via PATH shims, so the system polkit agent handles authentication",
   "type": "module",
   "main": "./dist/index.js",

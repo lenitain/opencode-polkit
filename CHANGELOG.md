@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-05
+
+### Added
+
+- `sudo -n`, `doas -n`: a non-interactive `pkcheck` on
+  `org.freedesktop.policykit.exec` decides whether the command runs. polkit grants
+  it without asking, or the shim exits `1` with `sudo: a password is required` and
+  the reason that dropping `-n` lets the agent answer. Measured: a successful
+  `pkexec` leaves no temporary authorization behind (`pkcheck --list-temp` stays
+  empty), so the silent second run is the agent's own password cache and no
+  non-interactive query can predict it; `-n` therefore reports policy, not a
+  guess.
+- `sudo -v` performs the authentication (`pkcheck --allow-user-interaction`) and
+  exits `0`, `1`, `126` when the dialog is dismissed, or `127`; `sudo -nv` uses
+  the non-interactive check.
+- `sudo -l` prints `pkaction --verbose` for the action and this session's
+  temporary authorizations.
+- `sudo -k`/`-K` revoke polkit's temporary authorizations and say that an agent's
+  own password cache cannot be cleared from here.
+- `sudo -H`, `-N`, `-P` are accepted as no-ops: pkexec already sets `HOME`, keeps
+  no timestamp and leaves groups alone.
+- `sudo -s COMMAND` and `--shell` run the command through a shell, `sudo -b`
+  starts it in the background and returns, and `sudo -E`/
+  `--preserve-env[=LIST]` re-export the environment inside the command.
+- `sudo --help` and `sudo -V` are answered by the real binary, so scripts that
+  probe sudo keep working.
+- Short options bundle (`sudo -nu bob`), and unknown long options report their own
+  name instead of `--`.
+- `opencode-polkit-env`: helper that turns `NAME=VALUE` arguments into export
+  statements. `-E` passes entries through argv (`env -0` into `xargs -0`), so
+  spaces, quotes and newlines survive, and it drops every shim directory from
+  `PATH` so an elevated command cannot resolve sudo back to a shim.
+- `src/index.ts`: the shell tool's description gains one sentence naming the
+  redirect and what `-n`, `-v` and `-l` answer, so the model plans privilege with
+  the real contract instead of learning it from a failed call.
+
+### Changed
+
+- The shims share one prologue: `fail`, the polkit subject (pinned with
+  `pid,start-time,uid` as `pkcheck(1)` requires), the two checks and the `pkexec`
+  wrapper.
+- `-n` failures exit `1` like sudo, not `64`: `64` now means only that the
+  invocation cannot be expressed. README documents the four-way handling
+  (translated, no-op, checked, refused) and polkit's missing temp authorization.
+- `sudo -i`, `-S`, `-A`, `sudoedit` and `visudo` still refuse, now from the shared
+  prelude.
+
 ## [0.3.1] - 2026-11-04
 
 ### Added

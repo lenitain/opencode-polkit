@@ -107,6 +107,13 @@ from its own copy of the password, and no user-space query can predict it. That
 is why `sudo -n` reports what the policy says rather than guessing whether a
 dialog would appear, and why `sudo -k` can only clear polkit's own record.
 
+The plugin keeps no authorization state of its own: `sudo -v` verifies once and
+writes nothing, `sudo -n` assumes nothing, and `sudo -k` only clears polkit's
+record. Authorising one command therefore leaves the next one to be decided
+again, which is the point — the person who allowed an upgrade can still refuse
+the deletion that follows. What widens that window is the agent's password
+cache, not this plugin, and nothing here can revoke it.
+
 ## Limitations
 
 - Absolute paths (`/usr/bin/sudo`) and relative ones (`./sudo`) bypass `PATH`.

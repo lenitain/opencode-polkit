@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `test/shims.test.ts`: behaviour tests for the generated shims. They stub
+  `pkexec`, `pkcheck` and `pkaction` on `PATH`, so they need neither polkit, a
+  desktop agent nor root; `npm test` runs them with Node's test runner.
+- README: account-lockout section. Where the `polkit-1` PAM service includes
+  `pam_faillock`, a wrong or empty password submitted in the dialog adds a
+  record shared with terminal sudo and login; dismissing the dialog adds none,
+  an agent may allow several attempts in one dialog (each retry starts a new PAM
+  helper), and a locked account rejects even the correct password for
+  `unlock_time`. Documents how to inspect and reset the tally, and why retrying
+  does not help.
+- README limitation: `-n`, `-v` and `-l` check
+  `org.freedesktop.policykit.exec` itself, while pkexec may select another
+  action installed with `org.freedesktop.policykit.exec.path`/`argv1`
+  annotations.
+
+### Changed
+
+- The shell tool's description now asks the model to consult the user before
+  retrying a dismissed or failed dialog, because failed or empty password
+  submissions count toward a system-wide `pam_faillock` lockout while a dismissal
+  does not.
+- README: `sudoers` and the `sudo` PAM stack are not consulted; polkit policy and
+  the `polkit-1` PAM service decide, so sudo-only modules such as a fingerprint
+  reader or a second factor do not run in OpenCode.
+- README now describes agent caching and retry behaviour generically instead of
+  attributing it to one desktop agent.
+- `sudo -v` reports an interactive failure as "polkit did not authorize" instead
+  of "polkit denies", since the check can fail after the password is rejected.
+- The shim's action comment now records that pkexec may select a custom action by
+  annotation, which the checks do not see.
+- `npm run check` now also type-checks `test/`, and CI runs check, test and
+  build.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added

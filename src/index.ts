@@ -18,7 +18,7 @@ const CONTRACT_MARKER = "polkit redirect:"
  * it knows about sudo, so the difference is stated where it reads the tool,
  * instead of being learned from a failed call.
  */
-const SHELL_TOOL_CONTRACT = `${CONTRACT_MARKER} \`sudo\`, \`doas\` and \`su -c\` run through pkexec, so a desktop polkit dialog authorises them instead of a terminal password prompt. \`sudo -n\` runs the command only if polkit would authorise it without asking, \`sudo -v\` performs the authentication, and \`sudo -l\` prints the polkit policy that decides.`
+const SHELL_TOOL_CONTRACT = `${CONTRACT_MARKER} \`sudo\`, \`doas\` and \`su -c\` run through pkexec, so a desktop polkit dialog authorises them instead of a terminal password prompt. \`sudo -n\` runs the command only if polkit would authorise it without asking, \`sudo -v\` performs a real authentication, and \`sudo -l\` prints the polkit policy that decides. Ask the user before retrying a dismissed or failed dialog instead of looping: on systems with pam_faillock, failed or empty password submissions count toward a system-wide lockout shared with login, while dismissing the dialog does not.`
 
 /**
  * Redirects sudo/doas/su -c to pkexec without touching the command text.

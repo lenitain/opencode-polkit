@@ -32,8 +32,9 @@ command -v pkcheck >/dev/null 2>&1 || fail 'pkcheck is not installed; install po
  * `polkit.result` detail are localised and addressed to humans, so parsing them
  * would break on the next locale or polkit release.
  */
-const SHIM_CHECKS = `# The action pkexec checks: a pkcheck verdict on it describes what the next
-# pkexec will do, which is how the shims answer what sudo's timestamp answered.
+const SHIM_CHECKS = `# The action checked below. pkexec uses it by default; a site can install
+# another action selected by org.freedesktop.policykit.exec.path/argv1, whose
+# rules these checks do not see.
 ACTION=${POLKIT_ACTION}
 
 # pkcheck(1) warns that a bare pid races with pid reuse, so pin the start time.
@@ -309,7 +310,7 @@ if [ "$mode" = validate ]; then
 		exit 0
 		;;
 	1)
-		printf 'opencode-polkit: sudo: polkit denies %s to this process\\n' "$ACTION" >&2
+		printf 'opencode-polkit: sudo: polkit did not authorize %s (the policy denies it, or authentication failed)\\n' "$ACTION" >&2
 		exit 1
 		;;
 	2)
